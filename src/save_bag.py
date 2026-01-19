@@ -16,7 +16,7 @@ class save_bag:
         
         bag_file = filepath + '/' + subject + '_' + date_string + '.bag'
         
-        topics = "/cvsa/eye /events/bus /cvsa/trials_keep /imu_cvsa /cvsa/neuroprediction /cvsa/features /cvsa/neuroprediction/integrated"
+        topics = "/cvsa/eye /events/bus /cvsa/trials_keep /imu_cvsa /cvsa/neuroprediction /cvsa/features /cvsa/neuroprediction/integrated /cvsa/neuroprediction/raw /cvsa/neuroprediction/icnic /cvsa/artifact_presence"
         record_command = f'rosbag record -O {bag_file} {topics}'
         
         # to save parameters used
