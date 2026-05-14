@@ -1,47 +1,136 @@
-# Audio and Data Recording Suite
+# bag_bci
 
-This repository contains Python-based ROS nodes designed for synchronized audio capture, event logging, and system telemetry recording.
-
----
-
-## 1. AudioRecorder.py
-The `AudioRecorderNode` is responsible for capturing high-quality audio and synchronizing it with system events.
-
-### Key Features
-* **Real-time Recording**: Captures mono audio at 44112 Hz and saves it directly to a `.wav` file.
-* **ROS Integration**: Publishes audio chunks as `AudioMessage` on the `/audio` topic for other nodes to process in real-time.
-* **Event Synchronization**: Subscribes to the `/events/bus` topic and logs `NeuroEvent` markers with timestamps relative to the start of the recording.
-* **Silence Detection**: Includes a diagnostic feature that monitors input data and logs a warning if a continuous stream of zeros (silence) is detected, suggesting microphone issues.
-* **Thread Safety**: Uses a threading lock to prevent conflicts between the audio callback (writing frames) and the event callback (logging markers).
+ROS nodes for recording experiment data (bag files + parameter snapshots) during BCI-VR sessions.
 
 ---
 
-## 2. save_bag.py
-The `SaveBag` node automates the process of recording ROS bag files and archiving system parameters.
+## 1. save_bag.py
 
-### Key Features
-* **Parameter Backup**: Automatically exports all current ROS parameters to a `.yaml` file before starting the recording to ensure experimental reproducibility.
-* **Selective Recording**: Executes a `rosbag record` command for a specific list of critical topics, including EEG data (`/neurodata`), event buses, and paradigm-specific predictions.
-* **Dynamic Naming**: Generates filenames using a combination of the subject ID, current date, and time to prevent overwriting data.
-* **Paradigm Support**: Dynamically adjusts topic paths based on the `paradigm` parameter (e.g., "hybrid").
+Records a `rosbag` with all topics relevant to the active paradigm and modality, plus a YAML snapshot of the full ROS parameter server for exact experiment reproducibility.
 
----
+Rosbag is stopped via **SIGINT** (not SIGTERM) so the bag file is properly finalized and indexed on shutdown.
 
-## Installation & Requirements
+### Parameters
 
-### Dependencies
-Ensure you have the following installed:
-* **Python Libraries**: `numpy`, `sounddevice`, `pyyaml`.
-* **ROS Messages**: `rosneuro_msgs` and `feedback_cvsa`.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `~subject` | `unknown_subject` | Subject ID used in the output filename |
+| `~paradigm` | `hybrid` | Active paradigm: `mi`, `cvsa`, or `hybrid` |
+| `~modality` | `evaluation` | Session mode: `calibration` or `evaluation` |
+| `~filepath` | `.` | Directory where bag and YAML files are written |
+| `~record_audio` | `false` | Also record the `/audio` topic (requires `AudioRecorder.py` running) |
+
+### Output files
+
+```
+<filepath>/
+  <subject>_<YYYYMMDD_HHMMSS>.bag    ← rosbag with selected topics
+  <subject>_<YYYYMMDD_HHMMSS>.yaml   ← full ROS param server dump
+```
+
+### Recorded topics
+
+#### Common topics (all paradigms and modalities)
+
+| Topic | Message type | Content |
+|-------|-------------|---------|
+| `/neurodata` | `rosneuro_msgs/NeuroFrame` | Raw EEG from acquisition |
+| `/events/bus` | `rosneuro_msgs/NeuroEvent` | Protocol markers (trial start/end, feedback, etc.) |
+| `/artifact_presence` | `artifacts_bci/artifact_presence` | EOG/peak artifact flags + seq |
+| `/rosout` | `rosgraph_msgs/Log` | Per-node log output |
+| `/rosout_agg` | `rosgraph_msgs/Log` | Aggregated ROS log |
+
+#### Evaluation-only topics — `paradigm:=mi`
+
+| Topic | Content |
+|-------|---------|
+| `/mi/eeg_fbcsp` | FBCSP variance features (MI channels + CSP) |
+| `/mi/neuroprediction/raw` | sLDA raw classifier output |
+| `/mi/neuroprediction/integrated/raw` | Buffer integrator output |
+| `/mi/neuroprediction/integrated/normalized` | Normalized integrator output |
+
+#### Evaluation-only topics — `paradigm:=cvsa`
+
+| Topic | Content |
+|-------|---------|
+| `/cvsa/eeg_fbcsp` | FBCSP variance features (CVSA channels + CSP) |
+| `/cvsa/neuroprediction/raw` | sLDA raw classifier output |
+| `/cvsa/neuroprediction/integrated/raw` | Buffer integrator output |
+| `/cvsa/neuroprediction/integrated/normalized` | Normalized integrator output |
+
+#### Evaluation-only topics — `paradigm:=hybrid`
+
+| Topic | Content |
+|-------|---------|
+| `/mi/eeg_fbcsp` | FBCSP features for MI path |
+| `/cvsa/eeg_fbcsp` | FBCSP features for CVSA path |
+| `/mi/neuroprediction/raw` | MI classifier output |
+| `/cvsa/neuroprediction/raw` | CVSA classifier output |
+| `/hybrid/neuroprediction/integrated/raw` | Bayesian-fused integrator output |
+| `/hybrid/neuroprediction/integrated/normalized` | Normalized integrator output |
+
+#### Optional
+
+| Topic | Enabled by | Content |
+|-------|-----------|---------|
+| `/audio` | `record_audio:=true` | Real-time audio chunks from `AudioRecorder.py` |
+
+> **Calibration mode**: only common topics are recorded. The FBCSP and classifier pipeline
+> is not active during calibration, so paradigm-specific topics are omitted.
 
 ### Usage
 
-#### Launching the Audio Recorder:
+The node is launched automatically by `evaluation.launch` and `calibration.launch`:
+
 ```bash
-python3 AudioRecorder.py _audio_file:="path/to/output.wav" _event_markers_file:="path/to/events.txt"
+roslaunch launchers_bci evaluation.launch  paradigm:=hybrid subject:=S01
+roslaunch launchers_bci calibration.launch paradigm:=mi     subject:=S01
 ```
 
-#### Launching the Data Saver:
+To run standalone:
+
 ```bash
-python3 save_bag.py _subject:="Subject01" _paradigm:="hybrid" _filepath:="./data"
+rosrun bag_bci save_bag.py \
+    _subject:=S01 \
+    _paradigm:=hybrid \
+    _modality:=evaluation \
+    _filepath:=/home/paolo/bci_vr_ws/recordings/S01/evaluation \
+    _record_audio:=false
 ```
+
+---
+
+## 2. AudioRecorder.py
+
+Captures synchronized audio during experiments.
+
+### Key features
+
+- Records mono audio at 44 112 Hz → `.wav` file
+- Publishes audio chunks in real time on `/audio` (includable in the bag via `record_audio:=true`)
+- Subscribes to `/events/bus` and logs `NeuroEvent` timestamps relative to recording start
+- Warns if a silence stream (all zeros) is detected (microphone diagnostic)
+- Thread-safe: separate lock between audio callback and event callback
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `~audio_file` | `./protocol_audio.wav` | Output `.wav` path |
+| `~event_markers_file` | `./event_markers.txt` | Event timestamp log path |
+| `~event_topic` | `/events/bus` | ROS event topic to time-stamp |
+
+### Usage
+
+```bash
+rosrun bag_bci AudioRecorder.py \
+    _audio_file:=/path/to/output.wav \
+    _event_markers_file:=/path/to/events.txt
+```
+
+---
+
+## Dependencies
+
+- **Python**: `rospy`, `pyyaml`, `subprocess`, `signal`, `numpy`, `sounddevice`
+- **ROS messages**: `rosneuro_msgs`, `artifacts_bci`
